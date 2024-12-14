@@ -16,6 +16,16 @@ let cachedResponse: CachedResponse = null;
 let lastFetched: Date | null = null;
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+    // Add CORS headers
+    res.setHeader("Access-Control-Allow-Origin", "*"); // Replace * with specific origin if needed
+    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    // Handle OPTIONS preflight request
+    if (req.method === "OPTIONS") {
+        return res.status(200).end();
+    }
+
     const now = new Date();
 
     // Check if the result is cached and within the same day
@@ -34,16 +44,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 {
                     role: "user",
                     content: `Generate a unique crossword puzzle theme with 15 words and their corresponding clues. Prioritize words between 4-7 letters. The output should strictly follow this format:
-
-{
-  "theme": "<unique theme>",
-  "words": [
-    { "word": "<word1>", "clue": "<clue1>" },
-    { "word": "<word2>", "clue": "<clue2>" },
-    ...
-    { "word": "<word15>", "clue": "<clue15>" }
-  ]
-}`,
+                ...
+                `,
                 },
             ],
         });
@@ -59,9 +61,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Cache the response and timestamp
         cachedResponse = {
             theme: rawResult.theme,
-            words: rawResult.words.map((entry: { word: string }) => entry.word),
+            words: rawResult.words.map((entry) => entry.word),
             clues: rawResult.words.reduce(
-                (acc: Record<string, string>, entry: { word: string; clue: string }) => {
+                (acc, entry) => {
                     acc[entry.word.toUpperCase()] = entry.clue;
                     return acc;
                 },
@@ -73,6 +75,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         res.status(200).json(cachedResponse);
     } catch (error) {
         console.error("Error fetching words and clues:", error);
-        res.status(500).json({ error: "Error generating crossword puzzle" });
+        res.status(500).json({ error: "Internal Server Error", details: error.message || error });
     }
 }
