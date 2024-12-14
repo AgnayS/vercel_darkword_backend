@@ -1,0 +1,10 @@
+{
+    "dependencies": {
+        "next": "^15.1.0",
+        "openai": "^4.76.3"
+    },
+    "devDependencies": {
+        "@types/react": "19.0.1",
+        "typescript": "5.7.2"
+    }
+}
