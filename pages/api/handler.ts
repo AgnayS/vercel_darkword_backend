@@ -15,6 +15,14 @@ type CachedResponse = {
 let cachedResponse: CachedResponse = null;
 let lastFetched: Date | null = null;
 
+// Utility function to sanitize and clean OpenAI response
+const sanitizeJSON = (response: string): string => {
+    return response
+        .replace(/```json/g, "") // Remove starting ```json
+        .replace(/```/g, "") // Remove any ending backticks
+        .trim(); // Remove leading/trailing whitespace
+};
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     // Add CORS headers
     res.setHeader("Access-Control-Allow-Origin", "*"); // Replace * with specific origin if needed
@@ -30,51 +38,73 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Check if the result is cached and within the same day
     if (cachedResponse && lastFetched && now.toDateString() === lastFetched.toDateString()) {
+        console.log("Returning cached response.");
         return res.status(200).json(cachedResponse);
     }
 
     try {
+        console.log("Requesting new data from OpenAI...");
+
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-4",
             messages: [
                 {
                     role: "system",
-                    content: "You are an advanced crossword puzzle generator. Generate unique themes with 15 words and clues for each word, formatted strictly as JSON.",
+                    content: `You are a professional crossword puzzle generator.
+Your task is to generate a unique crossword puzzle with exactly 15 words and concise clues. 
+Follow these rules:
+1. Words must be between 4 to 7 letters long.
+2. The output must strictly adhere to this JSON format with NO markdown, NO backticks, and NO explanations:
+
+{
+  "theme": "some-theme",
+  "words": ["WORD1", "WORD2", ...],
+  "clues": {
+    "word1": "clue for word1",
+    "word2": "clue for word2"
+  }
+}
+
+Ensure that:
+- The 'words' array contains unique words, all in uppercase.
+- The 'clues' object contains words as keys (case-insensitive) and their concise clues as values.
+`
                 },
                 {
                     role: "user",
-                    content: `Generate a unique crossword puzzle theme with 15 words and their corresponding clues. Prioritize words between 4-7 letters. The output should strictly follow this format:
-                ...
-                `,
+                    content: "Generate a crossword puzzle strictly following the above JSON format."
                 },
             ],
         });
 
-        const content = completion.choices[0]?.message?.content;
+        const rawContent = completion.choices[0]?.message?.content || "";
 
-        if (!content) {
-            throw new Error("No content returned by OpenAI API");
-        }
+        console.log("Raw response from OpenAI:", rawContent);
 
-        const rawResult = JSON.parse(content);
+        // Sanitize and clean up the JSON response
+        const sanitizedContent = sanitizeJSON(rawContent);
+        console.log("Sanitized response:", sanitizedContent);
 
-        // Cache the response and timestamp
-        cachedResponse = {
-            theme: rawResult.theme,
-            words: rawResult.words.map((entry) => entry.word),
-            clues: rawResult.words.reduce(
-                (acc, entry) => {
-                    acc[entry.word.toUpperCase()] = entry.clue;
-                    return acc;
-                },
-                {}
+        const parsedResult = JSON.parse(sanitizedContent);
+
+        // Enforce output format
+        const formattedResponse: CachedResponse = {
+            theme: parsedResult.theme,
+            words: parsedResult.words.map((word: string) => word.toUpperCase()),
+            clues: Object.fromEntries(
+                Object.entries(parsedResult.clues).map(
+                    ([word, clue]) => [word.toUpperCase(), clue as string]
+                )
             ),
         };
+
+        // Cache the response for the entire day
+        cachedResponse = formattedResponse;
         lastFetched = now;
 
-        res.status(200).json(cachedResponse);
+        res.status(200).json(formattedResponse);
     } catch (error) {
-        console.error("Error fetching words and clues:", error);
+        console.error("Error processing OpenAI response:", error);
         res.status(500).json({ error: "Internal Server Error", details: error.message || error });
     }
 }
