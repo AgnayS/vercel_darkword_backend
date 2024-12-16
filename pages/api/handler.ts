@@ -25,17 +25,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const now = new Date();
   const today = now.toISOString().slice(0, 10); // e.g. "2024-12-17"
-  const puzzlePath = `puzzle/${today}.json`; // We'll store today's puzzle as puzzle/YYYY-MM-DD.json
+  const puzzlePath = `puzzle/${today}/puzzle.json`;
 
   try {
     // 1. Check if today's puzzle is already in Blob storage
-    const existing = await list({ prefix: puzzlePath });
-    if (existing.blobs.length > 0) {
-      // Puzzle found, just fetch it and return it
-      const puzzleUrl = existing.blobs[0].url;
-      console.log("Returning puzzle from Blob storage:", puzzleUrl);
+    const existing = await list({ prefix: `puzzle/${today}/` });
+    const existingPuzzle = existing.blobs.find(blob => blob.pathname === puzzlePath);
 
-      const puzzleResponse = await fetch(puzzleUrl);
+    if (existingPuzzle) {
+      // Puzzle found, just fetch it and return it
+      console.log("Returning puzzle from Blob storage:", existingPuzzle.url);
+
+      const puzzleResponse = await fetch(existingPuzzle.url);
       if (!puzzleResponse.ok) {
         console.error("Error fetching puzzle from Blob:", puzzleResponse.status);
         return res.status(500).json({ error: "Failed to fetch puzzle from Blob" });
