@@ -1,60 +1,62 @@
-import { NextApiRequest, NextApiResponse } from "next";
-import OpenAI from "openai";
+import type { NextApiRequest, NextApiResponse } from 'next';
+import OpenAI from 'openai';
+import { list, put } from '@vercel/blob';
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY, // Securely stored API key
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Store the cached result
-type CachedResponse = {
-    theme: string;
-    words: string[];
-    clues: Record<string, string>;
-} | null;
-
-let cachedResponse: CachedResponse = null;
-let lastFetched: Date | null = null;
-
-// Utility function to sanitize and clean OpenAI response
-const sanitizeJSON = (response: string): string => {
-    return response
-        .replace(/```json/g, "") // Remove starting ```json
-        .replace(/```/g, "") // Remove any ending backticks
-        .trim(); // Remove leading/trailing whitespace
-};
+function sanitizeJSON(response: string): string {
+  return response
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-    // Add CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*"); // Replace * with specific origin if needed
-    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // CORS Headers
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-    // Handle OPTIONS preflight request
-    if (req.method === "OPTIONS") {
-        return res.status(200).end();
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10); // e.g. "2024-12-17"
+  const puzzlePath = `puzzle/${today}.json`; // We'll store today's puzzle as puzzle/YYYY-MM-DD.json
+
+  try {
+    // 1. Check if today's puzzle is already in Blob storage
+    const existing = await list({ prefix: puzzlePath });
+    if (existing.blobs.length > 0) {
+      // Puzzle found, just fetch it and return it
+      const puzzleUrl = existing.blobs[0].url;
+      console.log("Returning puzzle from Blob storage:", puzzleUrl);
+
+      const puzzleResponse = await fetch(puzzleUrl);
+      if (!puzzleResponse.ok) {
+        console.error("Error fetching puzzle from Blob:", puzzleResponse.status);
+        return res.status(500).json({ error: "Failed to fetch puzzle from Blob" });
+      }
+
+      const puzzleData = await puzzleResponse.json();
+      return res.status(200).json(puzzleData);
     }
 
-    const now = new Date();
-
-    // Check if the result is cached and within the same day
-    if (cachedResponse && lastFetched && now.toDateString() === lastFetched.toDateString()) {
-        console.log("Returning cached response.");
-        return res.status(200).json(cachedResponse);
-    }
-
-    try {
-        console.log("Requesting new data from OpenAI...");
-
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                {
-                    role: "system",
-                    content: `You are a professional crossword puzzle generator.
+    // 2. No puzzle found, generate a new one via OpenAI
+    console.log("Requesting new puzzle from OpenAI...");
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",  // Adjust model if needed
+      messages: [
+        {
+          role: "system",
+          content: `You are a professional crossword puzzle generator.
 Your task is to generate a unique crossword puzzle with exactly 15 words and concise clues. 
 Follow these rules:
 1. Words must be between 4 to 7 letters long.
-2. The output must strictly adhere to this JSON format with NO markdown, NO backticks, and NO explanations:
+2. The output must strictly adhere to this JSON format with NO markdown, NO backticks, NO explanations:
 
 {
   "theme": "some-theme",
@@ -69,42 +71,40 @@ Ensure that:
 - The 'words' array contains unique words, all in uppercase.
 - The 'clues' object contains words as keys (case-insensitive) and their concise clues as values.
 `
-                },
-                {
-                    role: "user",
-                    content: "Generate a crossword puzzle strictly following the above JSON format."
-                },
-            ],
-        });
+        },
+        {
+          role: "user",
+          content: "Generate a crossword puzzle strictly following the above JSON format."
+        },
+      ],
+    });
 
-        const rawContent = completion.choices[0]?.message?.content || "";
+    const rawContent = completion.choices[0]?.message?.content || "";
+    const sanitizedContent = sanitizeJSON(rawContent);
+    const parsedResult = JSON.parse(sanitizedContent);
 
-        console.log("Raw response from OpenAI:", rawContent);
+    const formattedResponse = {
+      theme: parsedResult.theme,
+      words: parsedResult.words.map((word: string) => word.toUpperCase()),
+      clues: Object.fromEntries(
+        Object.entries(parsedResult.clues).map(([word, clue]) => [word.toUpperCase(), clue])
+      ),
+    };
 
-        // Sanitize and clean up the JSON response
-        const sanitizedContent = sanitizeJSON(rawContent);
-        console.log("Sanitized response:", sanitizedContent);
+    // 3. Upload puzzle to Blob storage
+    // We'll upload it publicly so we can just fetch it directly in the future.
+    const blob = await put(puzzlePath, JSON.stringify(formattedResponse, null, 2), {
+      access: 'public',
+      contentType: 'application/json',
+    });
 
-        const parsedResult = JSON.parse(sanitizedContent);
+    console.log("Uploaded new puzzle to Blob:", blob.url);
 
-        // Enforce output format
-        const formattedResponse: CachedResponse = {
-            theme: parsedResult.theme,
-            words: parsedResult.words.map((word: string) => word.toUpperCase()),
-            clues: Object.fromEntries(
-                Object.entries(parsedResult.clues).map(
-                    ([word, clue]) => [word.toUpperCase(), clue as string]
-                )
-            ),
-        };
+    // 4. Return the newly generated puzzle
+    return res.status(200).json(formattedResponse);
 
-        // Cache the response for the entire day
-        cachedResponse = formattedResponse;
-        lastFetched = now;
-
-        res.status(200).json(formattedResponse);
-    } catch (error) {
-        console.error("Error processing OpenAI response:", error);
-        res.status(500).json({ error: "Internal Server Error", details: error.message || error });
-    }
+  } catch (error: any) {
+    console.error("Error:", error);
+    return res.status(500).json({ error: "Internal Server Error", details: error.message || String(error) });
+  }
 }
